@@ -1,69 +1,94 @@
-from flask import Flask, request, jsonify, render_template
-import pandas as pd
+from flask import Flask, render_template_string, request
 import joblib
-import numpy as np
 
 app = Flask(__name__)
 
-# Load the trained pipeline
-pipeline = joblib.load('pipeline.pkl')
+model = joblib.load("train/model.pkl")
+vectorizer = joblib.load("train/tfidf_vectorizer.pkl")
 
-@app.route('/')
+class_labels = {
+    0: "✅ Güvenli (Benign)",
+    1: "❌ Phishing (Oltalama)",
+    2: "❌ Defacement (Tahrifat)",
+    3: "⚠️ Malware / Other"
+}
+
+HTML = """
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <title>🔍 URL Güvenlik Analizi</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      text-align: center;
+      padding: 50px;
+      background: #f8f9fa;
+    }
+    h2 {
+      font-size: 28px;
+      margin-bottom: 20px;
+    }
+    input[type=text] {
+      width: 400px;
+      padding: 12px;
+      border: 2px solid #aaa;
+      border-radius: 10px;
+      font-size: 16px;
+    }
+    input[type=submit] {
+      padding: 12px 20px;
+      font-size: 16px;
+      margin-left: 10px;
+      border: none;
+      border-radius: 10px;
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+    }
+    .result {
+      margin-top: 30px;
+      padding: 20px;
+      border-radius: 10px;
+      display: inline-block;
+      background-color: white;
+      box-shadow: 0 0 20px rgba(0,0,0,0.1);
+    }
+    code {
+      background: #e9ecef;
+      padding: 4px 6px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔍 URL Güvenli mi?</h2>
+  <form method="post">
+    <input type="text" name="url" placeholder="Örn: http://example.com" required>
+    <input type="submit" value="Analiz Et">
+  </form>
+
+  {% if url %}
+  <div class="result">
+    <h3>🔗 URL: <code>{{ url }}</code></h3>
+    <h3>🔎 Sonuç: <b>{{ result }}</b></h3>
+  </div>
+  {% endif %}
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template('index.html')
+    result = None
+    url = None
+    if request.method == "POST":
+        url = request.form["url"]
+        vect = vectorizer.transform([url])
+        prediction = model.predict(vect)[0]
+        result = class_labels.get(prediction, "Bilinmeyen")
+    return render_template_string(HTML, result=result, url=url)
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    try:
-        json_data = request.get_json()
-        df = pd.DataFrame(json_data)
-
-        # Ensure all column names are strings
-        df.columns = df.columns.astype(str)
-
-        # Define the expected column names based on the training data
-        expected_columns = [str(i) for i in range(41)]
-
-        # Ensure the input data has all expected columns, adding missing ones with default values
-        for col in expected_columns:
-            if col not in df.columns:
-                df[col] = 0
-
-        # Keep only the expected columns
-        df = df[expected_columns]
-
-        # Define categorical and numeric columns
-        categorical_columns = ['1', '2', '3']
-        numeric_columns = [col for col in df.columns if col not in categorical_columns]
-
-        # Convert categorical columns to string type and fill NaNs with a placeholder
-        df[categorical_columns] = df[categorical_columns].astype(str).fillna('missing')
-
-        # Convert numeric columns to numeric type and fill NaNs with 0
-        df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
-
-        # Inspect the preprocessor step in the pipeline
-        preprocessor = pipeline.named_steps['preprocessor']
-        onehot = preprocessor.named_transformers_['cat']
-
-        # Ensure input matches the categories in the encoder
-        for i, col in enumerate(categorical_columns):
-            df[col] = df[col].apply(lambda x: x if x in onehot.categories_[i] else 'missing')
-
-        # Check if 'missing' is a known category in each categorical column
-        for i, col in enumerate(categorical_columns):
-            if 'missing' not in onehot.categories_[i]:
-                onehot.categories_[i] = np.append(onehot.categories_[i], 'missing')
-
-        # Process the data through the preprocessor
-        preprocessed_data = preprocessor.transform(df)
-
-        # Predict using the classifier step
-        predictions = pipeline.named_steps['model'].predict(preprocessed_data)
-
-        return jsonify({'prediction': predictions.tolist()})
-    except Exception as e:
-        return jsonify({'error': str(e)})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+if __name__ == "__main__":
+    app.run(debug=True)
